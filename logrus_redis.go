@@ -164,6 +164,9 @@ func newRedisConnectionPool(server, password string, port int, db int) *redis.Po
 			return c, err
 		},
 		TestOnBorrow: func(c redis.Conn, t time.Time) error {
+			if time.Since(t) < 5*time.Second {
+				return nil
+			}
 			_, err := c.Do("PING")
 			return err
 		},
