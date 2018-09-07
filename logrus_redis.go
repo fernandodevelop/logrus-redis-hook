@@ -11,15 +11,17 @@ import (
 
 // HookConfig stores configuration needed to setup the hook
 type HookConfig struct {
-	Key      string
-	Format   string
-	App      string
-	Host     string
-	Password string
-	Hostname string
-	Port     int
-	DB       int
-	TTL      int
+	Key        string
+	Format     string
+	App        string
+	Host       string
+	Password   string
+	Hostname   string
+	Port       int
+	DB         int
+	TTL        int
+	Async      bool
+	BufferSize int
 }
 
 // RedisHook to sends logs to Redis server
@@ -32,6 +34,8 @@ type RedisHook struct {
 	Hostname       string
 	RedisPort      int
 	TTL            int
+	Async          bool
+	EntryQueue     chan *logrus.Entry
 }
 
 // NewHook creates a hook to be added to an instance of logger
@@ -51,7 +55,7 @@ func NewHook(config HookConfig) (*RedisHook, error) {
 		return nil, fmt.Errorf("unable to connect to REDIS: %s", err)
 	}
 
-	return &RedisHook{
+	redisHook := RedisHook{
 		RedisHost:      config.Host,
 		RedisPool:      pool,
 		RedisKey:       config.Key,
@@ -59,12 +63,38 @@ func NewHook(config HookConfig) (*RedisHook, error) {
 		AppName:        config.App,
 		Hostname:       config.Hostname,
 		TTL:            config.TTL,
-	}, nil
+		Async:          config.Async,
+		EntryQueue:     nil,
+	}
 
+	if config.BufferSize == 0 {
+		config.BufferSize = 8192
+	}
+
+	if config.Async {
+		redisHook.EntryQueue = make(chan *logrus.Entry, config.BufferSize)
+		go redisHook.processAsync()
+	}
+
+	return &redisHook, nil
 }
 
 // Fire is called when a log event is fired.
 func (hook *RedisHook) Fire(entry *logrus.Entry) error {
+	if hook.Async {
+		select {
+		case hook.EntryQueue <- entry:
+		default:
+			fmt.Println("ERROR: log chanel buffer is full!")
+		}
+
+		return nil
+	} else {
+		return hook.processEntry(entry)
+	}
+}
+
+func (hook *RedisHook) processEntry(entry *logrus.Entry) error {
 	var msg interface{}
 
 	switch hook.LogstashFormat {
@@ -100,6 +130,18 @@ func (hook *RedisHook) Fire(entry *logrus.Entry) error {
 	}
 
 	return nil
+}
+
+func (hook *RedisHook) processAsync() {
+	for {
+		entry, ok := <-hook.EntryQueue
+		if !ok {
+			fmt.Println("ERROR: Cant read from log chanel, is it closed ?")
+			// break
+		}
+		hook.processEntry(entry)
+	}
+
 }
 
 // Levels returns the available logging levels.
